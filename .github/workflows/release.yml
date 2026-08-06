@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  # ─── Build Next.js web app ──────────────────────────────────────────────────
+  # ─── Build Next.js web app (standalone server) ──────────────────────────────
   build-web:
     name: 🌐 Build Web App
     runs-on: ubuntu-latest
@@ -41,7 +41,7 @@ jobs:
           cp -r .next/static standalone-dist/.next/static
           cp -r public standalone-dist/public
           tar -czf excalibur-auth-web-${{ github.ref_name }}.tar.gz -C standalone-dist .
-          echo "✅ Web build packaged: $(du -sh excalibur-auth-web-${{ github.ref_name }}.tar.gz)"
+          echo "✅ Web build: $(du -sh excalibur-auth-web-${{ github.ref_name }}.tar.gz)"
 
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
@@ -49,7 +49,7 @@ jobs:
           name: web-build
           path: excalibur-auth-web-${{ github.ref_name }}.tar.gz
 
-  # ─── Build Android APK via Capacitor ────────────────────────────────────────
+  # ─── Build Android APK via Capacitor (frontend only, points to self-hosted server) ─
   build-apk:
     name: 📱 Build Android APK
     runs-on: ubuntu-latest
@@ -74,69 +74,75 @@ jobs:
       - name: Generate Prisma client
         run: bun run db:generate
 
-      - name: Install Capacitor CLI
-        run: bun add --global @capacitor/cli
+      - name: Install Capacitor
+        run: bun add @capacitor/core @capacitor/android
 
-      - name: Build Next.js (static export for APK)
+      - name: Build static frontend (no API routes)
         run: |
-          # Temporarily switch to static export mode
-          cat > next.config.override.mjs << 'NEXTEOF'
+          # Write a minimal static config that skips API routes
+          cat > next.config.static.js << 'EOF'
           /** @type {import('next').NextConfig} */
-          const nextConfig = {
+          module.exports = {
             output: 'export',
+            distDir: 'out-static',
             trailingSlash: true,
             images: { unoptimized: true },
             typescript: { ignoreBuildErrors: true },
             eslint: { ignoreDuringBuilds: true },
           };
-          export default nextConfig;
-          NEXTEOF
+          EOF
+
+          # Temporarily replace next.config.ts
           mv next.config.ts next.config.ts.bak
-          cp next.config.override.mjs next.config.mjs
-          # Run build with the mjs override
-          NEXT_CONFIG_FILE=next.config.mjs bun run build || bun x next build next.config.override.mjs || true
+          mv next.config.static.js next.config.ts
+
+          # Remove dynamic API routes temporarily so static export works
+          mv src/app/api src/app/api.bak
+
+          # Build static
+          bun x next build || true
+
+          # Restore
           mv next.config.ts.bak next.config.ts
-          rm -f next.config.mjs next.config.override.mjs
+          mv src/app/api.bak src/app/api
+          rm -f next.config.static.js
+
+          echo "=== Static build output ==="
+          ls -la out-static/ 2>/dev/null || echo "No out-static dir"
         env:
-          NEXTAUTH_SECRET: build-placeholder-secret-32chars!!
+          NEXTAUTH_SECRET: build-placeholder
           NEXTAUTH_URL: http://localhost:3000
 
-      - name: Setup Capacitor & Android project
+      - name: Setup Capacitor project
         run: |
-          # Install capacitor deps
-          bun add @capacitor/core @capacitor/android
-
-          # Create capacitor.config.json
+          # Create capacitor config pointing to the static export
           cat > capacitor.config.json << 'EOF'
           {
             "appId": "com.excalibur.auth",
             "appName": "Excalibur Auth",
-            "webDir": "out",
+            "webDir": "out-static",
             "server": {
               "androidScheme": "https"
-            },
-            "android": {
-              "buildOptions": {
-                "keystorePath": null,
-                "keystoreAlias": null
-              }
             }
           }
           EOF
 
-          # Init and add android
+          # Init Capacitor (non-interactive)
           bunx cap add android
-          bunx cap copy android
 
-      - name: Build APK (debug)
+          # Copy web assets
+          bunx cap copy android
+          echo "✅ Capacitor setup done"
+
+      - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -50
+          ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
           cd ..
-          APK_PATH=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -1)
-          cp "$APK_PATH" excalibur-auth-${{ github.ref_name }}.apk
-          echo "✅ APK built: $(du -sh excalibur-auth-${{ github.ref_name }}.apk)"
+          APK=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -1)
+          cp "$APK" excalibur-auth-${{ github.ref_name }}.apk
+          echo "✅ APK: $(du -sh excalibur-auth-${{ github.ref_name }}.apk)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -172,7 +178,7 @@ jobs:
             ### 📦 Downloads
             | Fichier | Description |
             |---------|-------------|
-            | `excalibur-auth-${{ github.ref_name }}.apk` | ✅ APK Android (debug) |
+            | `excalibur-auth-${{ github.ref_name }}.apk` | ✅ APK Android (sideload) |
             | `excalibur-auth-web-${{ github.ref_name }}.tar.gz` | 🌐 Serveur web Next.js standalone |
 
             ### 📱 Installer l'APK
