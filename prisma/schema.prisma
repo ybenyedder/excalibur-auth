@@ -1,0 +1,31 @@
+// Excalibur — Prisma schema.
+// Server stores only encrypted vault blobs + hashed auth tokens (zero-knowledge).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Profile {
+  // Lowercase name, [a-z0-9_-], max 32 chars.
+  name      String   @id
+  // SHA-256 hex hash of the derived auth token (constant-time compared in code).
+  tokenHash String
+  // Encrypted vault blob, stored as JSON string.
+  vault     String
+  // Iteration counter for optimistic-concurrency / versioning.
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Failed-auth tracking for rate-limiting (5 fails → 5 min freeze).
+  failCount    Int      @default(0)
+  lastFailAt   DateTime?
+  frozenUntil  DateTime?
+
+  @@index([tokenHash])
+}
