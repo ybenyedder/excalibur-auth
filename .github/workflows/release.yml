@@ -15,7 +15,6 @@ permissions:
   contents: write
 
 jobs:
-  # ─── Build Next.js web app (standalone server) ──────────────────────────────
   build-web:
     name: 🌐 Build Web App
     runs-on: ubuntu-latest
@@ -47,7 +46,6 @@ jobs:
           cp -r .next/static standalone-dist/.next/static
           cp -r public standalone-dist/public
           tar -czf excalibur-auth-web-${{ github.ref_name }}.tar.gz -C standalone-dist .
-          echo "✅ Web build: $(du -sh excalibur-auth-web-${{ github.ref_name }}.tar.gz)"
 
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
@@ -55,7 +53,6 @@ jobs:
           name: web-build
           path: excalibur-auth-web-${{ github.ref_name }}.tar.gz
 
-  # ─── Build Android APK via Capacitor ─────────────────────────────────────────
   build-apk:
     name: 📱 Build Android APK
     runs-on: ubuntu-latest
@@ -68,7 +65,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -87,15 +84,10 @@ jobs:
 
       - name: Build static frontend for APK
         run: |
-          # Write static config in a temp directory outside src/
           mkdir -p /tmp/next-static-build
           cp -r . /tmp/next-static-build/app
           cd /tmp/next-static-build/app
-
-          # Remove API routes entirely (they won't work in APK anyway)
           rm -rf src/app/api
-
-          # Write minimal static config
           cat > next.config.ts << 'EOF'
           import type { NextConfig } from 'next';
           const nextConfig: NextConfig = {
@@ -107,14 +99,8 @@ jobs:
           };
           export default nextConfig;
           EOF
-
           bun install --frozen-lockfile
           bun x next build || true
-
-          echo "=== Static build output ==="
-          ls -la out-static/ 2>/dev/null || echo "No out-static dir — build failed"
-
-          # Copy the output back
           cp -r out-static $GITHUB_WORKSPACE/out-static 2>/dev/null || true
         env:
           NEXTAUTH_SECRET: build-placeholder
@@ -126,31 +112,14 @@ jobs:
             mkdir -p out-static
             cat > out-static/index.html << 'EOF'
           <!DOCTYPE html>
-          <html lang="fr">
-          <head><meta charset="UTF-8"><title>Excalibur Auth</title>
-          <meta name="viewport" content="width=device-width,initial-scale=1">
-          <style>body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0f172a;color:#f8fafc;}
-          h1{font-size:2rem;margin-bottom:.5rem}p{color:#94a3b8;text-align:center;max-width:400px}</style>
-          </head>
-          <body>
-          <h1>🔐 Excalibur Auth</h1>
-          <p>Cette application nécessite un serveur auto-hébergé.<br>
-          Télécharge le bundle web et lance <code>node server.js</code> sur ton serveur.</p>
-          <p style="margin-top:2rem"><a href="https://github.com/ybenyedder/excalibur-auth/releases" style="color:#818cf8">⬇ Télécharger le bundle web</a></p>
-          </body></html>
+          <html><body><h1>Excalibur Auth App Placeholder</h1></body></html>
           EOF
-            echo "⚠ Used fallback HTML"
           fi
-          echo "=== out-static contents ==="
-          ls out-static/
 
       - name: Setup Capacitor & build Android project
         run: |
-          # Install Capacitor via npm (not bun, to avoid bunx resolution issue)
           npm install --save @capacitor/core @capacitor/android
           npm install --save-dev @capacitor/cli
-
-          # Write capacitor config
           cat > capacitor.config.json << 'EOF'
           {
             "appId": "com.excalibur.auth",
@@ -159,26 +128,16 @@ jobs:
             "server": { "androidScheme": "https" }
           }
           EOF
-
-          # Use npx (reliable) instead of bunx
           npx cap add android
           npx cap copy android
-          echo "✅ Capacitor done"
 
-      - name: Fix Kotlin stdlib duplicate classes (Capacitor + Gradle)
+      - name: Fix Kotlin stdlib duplicate classes
         run: |
-          # Force resolution of duplicate kotlin-stdlib-jdk8 classes
           cat >> android/gradle.properties << 'EOF'
-
-# Fix duplicate Kotlin stdlib classes
-android.suppressKotlinVersionCompatibilityCheck=true
-kotlin.stdlib.jdk.variants.version.alignment=false
-EOF
-
-          # Add resolution strategy to app/build.gradle
+          android.suppressKotlinVersionCompatibilityCheck=true
+          kotlin.stdlib.jdk.variants.version.alignment=false
+          EOF
           sed -i '/android {/i configurations.all {\n    resolutionStrategy {\n        force "org.jetbrains.kotlin:kotlin-stdlib:1.8.22"\n        force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22"\n        force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"\n    }\n}\n' android/app/build.gradle || true
-
-          echo "✅ Kotlin fix applied"
 
       - name: Build APK
         run: |
@@ -187,9 +146,7 @@ EOF
           ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
           cd ..
           APK=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -1)
-          echo "APK found: $APK"
           cp "$APK" excalibur-auth-${{ github.ref_name }}.apk
-          echo "✅ APK: $(du -sh excalibur-auth-${{ github.ref_name }}.apk)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -197,7 +154,6 @@ EOF
           name: apk-build
           path: excalibur-auth-${{ github.ref_name }}.apk
 
-  # ─── Create GitHub Release ────────────────────────────────────────────────────
   release:
     name: 📦 Create Release
     runs-on: ubuntu-latest
@@ -217,32 +173,8 @@ EOF
         uses: softprops/action-gh-release@v2
         with:
           name: "🔐 Excalibur Auth ${{ github.ref_name }}"
-          body: |
-            ## 🔐 Excalibur Auth ${{ github.ref_name }}
-
-            Self-hosted zero-knowledge TOTP authenticator — Google Authenticator style.
-
-            ### 📦 Downloads
-            | Fichier | Description |
-            |---------|-------------|
-            | `excalibur-auth-${{ github.ref_name }}.apk` | ✅ APK Android (sideload) |
-            | `excalibur-auth-web-${{ github.ref_name }}.tar.gz` | 🌐 Serveur web Next.js standalone |
-
-            ### 📱 Installer l'APK
-            1. Télécharge `excalibur-auth-${{ github.ref_name }}.apk`
-            2. Active **"Sources inconnues"** dans les paramètres Android
-            3. Lance l'installation
-
-            ### 🌐 Déployer le serveur web
-            ```bash
-            tar xzf excalibur-auth-web-${{ github.ref_name }}.tar.gz
-            node server.js
-            ```
-
-            ---
-            > 🤖 Build automatique via GitHub Actions
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          prerelease: false
           files: |
             excalibur-auth-${{ github.ref_name }}.apk
             excalibur-auth-web-${{ github.ref_name }}.tar.gz
