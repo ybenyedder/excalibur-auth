@@ -159,11 +159,26 @@ jobs:
           npx cap copy android
           echo "✅ Capacitor done"
 
+      - name: Fix Kotlin stdlib duplicate classes (Capacitor + Gradle)
+        run: |
+          # Force resolution of duplicate kotlin-stdlib-jdk8 classes
+          cat >> android/gradle.properties << 'EOF'
+
+# Fix duplicate Kotlin stdlib classes
+android.suppressKotlinVersionCompatibilityCheck=true
+kotlin.stdlib.jdk.variants.version.alignment=false
+EOF
+
+          # Add resolution strategy to app/build.gradle
+          sed -i '/android {/i configurations.all {\n    resolutionStrategy {\n        force "org.jetbrains.kotlin:kotlin-stdlib:1.8.22"\n        force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22"\n        force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"\n    }\n}\n' android/app/build.gradle || true
+
+          echo "✅ Kotlin fix applied"
+
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon 2>&1 | tail -20
+          ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
           cd ..
           APK=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -1)
           echo "APK found: $APK"
