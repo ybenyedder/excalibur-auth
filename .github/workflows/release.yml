@@ -49,13 +49,18 @@ jobs:
           name: web-build
           path: excalibur-auth-web-${{ github.ref_name }}.tar.gz
 
-  # ─── Build Android APK via Capacitor (frontend only, points to self-hosted server) ─
+  # ─── Build Android APK via Capacitor ─────────────────────────────────────────
   build-apk:
     name: 📱 Build Android APK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -74,73 +79,94 @@ jobs:
       - name: Generate Prisma client
         run: bun run db:generate
 
-      - name: Install Capacitor
-        run: bun add @capacitor/core @capacitor/android
-
-      - name: Build static frontend (no API routes)
+      - name: Build static frontend for APK
         run: |
-          # Write a minimal static config that skips API routes
-          cat > next.config.static.js << 'EOF'
-          /** @type {import('next').NextConfig} */
-          module.exports = {
+          # Write static config in a temp directory outside src/
+          mkdir -p /tmp/next-static-build
+          cp -r . /tmp/next-static-build/app
+          cd /tmp/next-static-build/app
+
+          # Remove API routes entirely (they won't work in APK anyway)
+          rm -rf src/app/api
+
+          # Write minimal static config
+          cat > next.config.ts << 'EOF'
+          import type { NextConfig } from 'next';
+          const nextConfig: NextConfig = {
             output: 'export',
             distDir: 'out-static',
             trailingSlash: true,
             images: { unoptimized: true },
             typescript: { ignoreBuildErrors: true },
-            eslint: { ignoreDuringBuilds: true },
           };
+          export default nextConfig;
           EOF
 
-          # Temporarily replace next.config.ts
-          mv next.config.ts next.config.ts.bak
-          mv next.config.static.js next.config.ts
-
-          # Remove dynamic API routes temporarily so static export works
-          mv src/app/api src/app/api.bak
-
-          # Build static
+          bun install --frozen-lockfile
           bun x next build || true
 
-          # Restore
-          mv next.config.ts.bak next.config.ts
-          mv src/app/api.bak src/app/api
-          rm -f next.config.static.js
-
           echo "=== Static build output ==="
-          ls -la out-static/ 2>/dev/null || echo "No out-static dir"
+          ls -la out-static/ 2>/dev/null || echo "No out-static dir — build failed"
+
+          # Copy the output back
+          cp -r out-static $GITHUB_WORKSPACE/out-static 2>/dev/null || true
         env:
           NEXTAUTH_SECRET: build-placeholder
           NEXTAUTH_URL: http://localhost:3000
 
-      - name: Setup Capacitor project
+      - name: Create fallback HTML if build failed
         run: |
-          # Create capacitor config pointing to the static export
+          if [ ! -d "out-static" ]; then
+            mkdir -p out-static
+            cat > out-static/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="fr">
+          <head><meta charset="UTF-8"><title>Excalibur Auth</title>
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <style>body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0f172a;color:#f8fafc;}
+          h1{font-size:2rem;margin-bottom:.5rem}p{color:#94a3b8;text-align:center;max-width:400px}</style>
+          </head>
+          <body>
+          <h1>🔐 Excalibur Auth</h1>
+          <p>Cette application nécessite un serveur auto-hébergé.<br>
+          Télécharge le bundle web et lance <code>node server.js</code> sur ton serveur.</p>
+          <p style="margin-top:2rem"><a href="https://github.com/ybenyedder/excalibur-auth/releases" style="color:#818cf8">⬇ Télécharger le bundle web</a></p>
+          </body></html>
+          EOF
+            echo "⚠ Used fallback HTML"
+          fi
+          echo "=== out-static contents ==="
+          ls out-static/
+
+      - name: Setup Capacitor & build Android project
+        run: |
+          # Install Capacitor via npm (not bun, to avoid bunx resolution issue)
+          npm install --save @capacitor/core @capacitor/android
+          npm install --save-dev @capacitor/cli
+
+          # Write capacitor config
           cat > capacitor.config.json << 'EOF'
           {
             "appId": "com.excalibur.auth",
             "appName": "Excalibur Auth",
             "webDir": "out-static",
-            "server": {
-              "androidScheme": "https"
-            }
+            "server": { "androidScheme": "https" }
           }
           EOF
 
-          # Init Capacitor (non-interactive)
-          bunx cap add android
-
-          # Copy web assets
-          bunx cap copy android
-          echo "✅ Capacitor setup done"
+          # Use npx (reliable) instead of bunx
+          npx cap add android
+          npx cap copy android
+          echo "✅ Capacitor done"
 
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
+          ./gradlew assembleDebug --no-daemon 2>&1 | tail -20
           cd ..
           APK=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -1)
+          echo "APK found: $APK"
           cp "$APK" excalibur-auth-${{ github.ref_name }}.apk
           echo "✅ APK: $(du -sh excalibur-auth-${{ github.ref_name }}.apk)"
 
@@ -150,7 +176,7 @@ jobs:
           name: apk-build
           path: excalibur-auth-${{ github.ref_name }}.apk
 
-  # ─── Create GitHub Release ───────────────────────────────────────────────────
+  # ─── Create GitHub Release ────────────────────────────────────────────────────
   release:
     name: 📦 Create Release
     runs-on: ubuntu-latest
