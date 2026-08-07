@@ -172,7 +172,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "🔐 Excalibur Auth ${{ github.ref_name }}"
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: "🔐 Excalibur Auth ${{ github.event.inputs.version || github.ref_name }}"
           draft: false
           prerelease: false
           files: |
